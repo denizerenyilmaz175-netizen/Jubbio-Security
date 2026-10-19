@@ -370,3 +370,12 @@ Gerçek bridge’in sürüm pin’leri, Rust crate API’si ve lisans/dağıtım
 ## Sonuç
 
 Jubbio için önerilen güvenli temel, eski 15 katmanlı özel şifreleme değil; cihazda üretilen anahtarlar, doğrulanmış prekey bundle, resmi libsignal oturumları, Double Ratchet, güvenli OS storage ve yalnızca şifreli veri taşıyan bir relay sunucusudur. C++ uygulaması bu sistemi kendi kriptografisini yazarak değil, sürümlenmiş Rust/libsignal bridge üzerinden kullanmalıdır. Bu dosya üretim entegrasyon planı ve kod iskeletidir; gerçek Jubbio kaynak kodu, API’si ve seçilecek platformlar görülmeden çalışan üretim modu olduğu iddia edilemez.
+
+
+## Eklenen savunma katmanları
+
+Mevcut relay servisine E2EE protokolünün dışındaki savunma katmanları da eklenmiştir: timestamp + tek kullanımlık nonce replay cache’i, IP/cihaz/peer bazlı zamanla azalan risk puanı, eşiklerle kademeli tepki ve içerik taşımayan hash-zincirli olay günlüğü. Olay kaydı mesaj veya anahtar saklamaz; retention ve KVKK/GDPR politikası deployment tarafından belirlenmelidir.
+
+Yerel secret saklama için scrypt + AES-256-GCM parola kasası eklenmiştir. Bu kasa Signal identity/prekey anahtarlarının yerine geçmez; gerçek identity/prekey private key’leri libsignal ve işletim sistemi secure storage içinde kalmalıdır. JavaScript buffer temizliği best-effort olduğundan kesin RAM silme garantisi değildir.
+
+Decoy servis ayrı Docker imajı ve ayrı ağ profili olarak bulunur. Gerçek relay ağına bağlanmaz, yalnızca erişim olayının hashlenmiş IP’sini ve endpoint metadata’sını içeriksiz audit kaydına yazar. Yüksek risk yönlendirmesi reverse proxy/WAF seviyesinde ve ayrı makine/segment üzerinde yapılmalıdır; uygulama içinden şüpheli isteği gerçek veriye sahip decoy’a otomatik forward etmek güvenli değildir.

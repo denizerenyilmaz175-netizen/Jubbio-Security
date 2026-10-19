@@ -12,6 +12,9 @@ Sunucu **mesaj plaintext’ini ve dosya plaintext’ini üretmez**. Sunucuya gel
 
 - `server/`: Node.js 22 REST + WebSocket opaque relay.
 - `client/media.mjs`: İstemci tarafında AES-256-GCM ile authenticated, sıralı medya parçası şifreleme örneği.
+- `client/key-vault.mjs`: scrypt + AES-256-GCM ile yerel parola kasası; anahtar buffer’ları işlem sonunda temizlenir.
+- `server/src/security-controls.mjs`: zamanla azalan risk puanı ve hash-zincirli, içeriksiz olay günlüğü.
+- `security/decoy.mjs`: gerçek relay ağına bağlı olmayan izole decoy/honeypot servisi.
 - `scripts/e2e-test.mjs`: İki cihazla imzalı relay, bozuk imza reddi, inbox ve medya round-trip testi.
 - `scripts/federation-test.mjs`: İki sunucu ve üç kullanıcıyla pinned peer signing ve opaque cross-server delivery testi.
 - `docker-compose.yml`: Tek komutla izole Docker kurulumu.
@@ -37,6 +40,7 @@ npm install
 cd ..
 node scripts/e2e-test.mjs
 node scripts/federation-test.mjs
+node scripts/security-controls-test.mjs
 ```
 
 Test şunları kanıtlar: cihaz public key kaydı, Ed25519 imzalı relay, imza bozulmasının reddi, inbox teslimi, AES-256-GCM medya chunk round-trip’i ve diskte yalnızca testin şifreli medya blob’unun tutulması. Testteki `opaque-libsignal-ciphertext-v1` gerçek Signal ciphertext değildir; gerçek istemci bunun yerine libsignal çıktısı vermelidir.
@@ -85,6 +89,9 @@ Zaman damgası 5 dakika penceresindedir. Sunucu nonce’ları TTL’li replay ca
 - Postgres/SQLite gibi güvenilir kalıcı store seç; bu başlangıç sürümünün JSON store’u yüksek hacim için uygun değildir.
 - Media download authorization’ı alıcının libsignal erişim biletiyle sınırla; örnek endpoint owner-only’dir.
 - Fuzz, iki sunucu/üç kullanıcı federasyon testi, disk plaintext taraması, bağımsız protokol denetimi ve bug bounty tamamlanmadan üretime alma.
+- Yüksek risk trafiğini decoy’a yönlendirme reverse proxy/WAF seviyesinde yapılmalı; decoy varsayılan compose profiline dahil değildir. Başlatmak için `docker compose --profile decoy up -d --build` kullanılır ve decoy ağı relay ağından ayrıdır.
+- Hash-zincirli audit kaydı içerik taşımaz; IP/olay metadata’sı için saklama süresi, KVKK/GDPR ve erişim yetkisi ayrıca uygulanmalıdır.
+- Node buffer temizliği best-effort’tur; JavaScript GC üzerinde kesin RAM silme garantisi yoktur. Identity/prekey private key’leri gerçek libsignal ve OS secure storage içinde tutulmalıdır.
 
 ## Kaynaklar
 

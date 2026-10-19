@@ -7,6 +7,8 @@ services:
       - "${PORT:-8080}:8080"
     volumes:
       - jubbio_data:/data
+    networks:
+      - relay_net
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
@@ -19,5 +21,25 @@ services:
       interval: 20s
       timeout: 5s
       retries: 5
+  decoy:
+    profiles: ["decoy"]
+    build:
+      context: .
+      dockerfile: Dockerfile.decoy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    volumes:
+      - decoy_data:/decoy-data
+    networks:
+      - decoy_net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
 volumes:
   jubbio_data:
+  decoy_data:
+networks:
+  relay_net:
+  decoy_net:

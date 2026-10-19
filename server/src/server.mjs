@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { Store } from './store.mjs';
 import { MAX_BODY, validateNonce, validateOpaqueEnvelope, verifyRequest } from './crypto.mjs';
+import { AuditChain, RiskEngine } from './security-controls.mjs';
 
 const PORT = Number(process.env.PORT || 8080);
 const DATA_DIR = process.env.DATA_DIR || '/data';
@@ -15,6 +16,8 @@ const SERVER_ID = process.env.SERVER_ID || 'local';
 const PEERS = JSON.parse(process.env.FEDERATION_PEERS_JSON || '{}');
 const seenNonces = new Map();
 const store = new Store(DATA_DIR);
+const risk = new RiskEngine();
+const audit = new AuditChain(join(DATA_DIR, 'audit', 'events.log'));
 const sockets = new Map();
 const buckets = new Map();
 
@@ -25,16 +28,17 @@ async function body(req, limit = MAX_BODY) { const chunks = []; let total = 0; f
 async function jsonBody(req) { const b = await body(req, 2 * 1024 * 1024); return JSON.parse(b.toString('utf8')); }
 function rateLimit(key, max = 120) { const now = Date.now(); const x = buckets.get(key) || { at: now, count: 0 }; if (now - x.at > 60_000) { x.at = now; x.count = 0; } x.count++; buckets.set(key, x); return x.count <= max; }
 function auth(req, raw, deviceId) {
-  const d = store.device(deviceId); if (!d || !validateNonce(req.headers['x-nonce'])) return false;
-  const nonceKey = `device:${deviceId}:${req.headers['x-nonce']}`; if (seenNonces.has(nonceKey)) return false;
+  const actor = deviceId || String(req.socket.remoteAddress || 'unknown'); const d = store.device(deviceId); if (!d || !validateNonce(req.headers['x-nonce'])) { risk.score(actor, 8); void audit.record('invalid_auth', { ip: req.socket.remoteAddress, actor, score: risk.get(actor).score }); return false; }
+  if (risk.isBlocked(actor)) return false;
+  const nonceKey = `device:${deviceId}:${req.headers['x-nonce']}`; if (seenNonces.has(nonceKey)) { risk.score(actor, 12); void audit.record('replay_nonce', { ip: req.socket.remoteAddress, actor, score: risk.get(actor).score }); return false; }
   const valid = verifyRequest({ publicKeyPem: d.publicKeyPem, signatureB64: req.headers['x-signature'], method: req.method, path: new URL(req.url, 'http://localhost').pathname, timestamp: req.headers['x-timestamp'], nonce: req.headers['x-nonce'], body: raw });
-  if (valid) seenNonces.set(nonceKey, Date.now() + 5 * 60 * 1000); return valid;
+  if (valid) seenNonces.set(nonceKey, Date.now() + 5 * 60 * 1000); else { risk.score(actor, 10); void audit.record('invalid_signature', { ip: req.socket.remoteAddress, actor, score: risk.get(actor).score }); } return valid && !risk.isBlocked(actor);
 }
 function peerAuth(req, raw) {
-  const peerId = String(req.headers['x-peer-id'] || ''); const peer = PEERS[peerId]; if (!peer || !validateNonce(req.headers['x-nonce'])) return false;
-  const nonceKey = `peer:${peerId}:${req.headers['x-nonce']}`; if (seenNonces.has(nonceKey)) return false;
+  const peerId = String(req.headers['x-peer-id'] || ''); const actor = `peer:${peerId}`; const peer = PEERS[peerId]; if (!peer || !validateNonce(req.headers['x-nonce'])) { risk.score(actor, 15); void audit.record('invalid_peer_auth', { ip: req.socket.remoteAddress, actor, score: risk.get(actor).score }); return false; }
+  const nonceKey = `peer:${peerId}:${req.headers['x-nonce']}`; if (seenNonces.has(nonceKey)) { risk.score(actor, 15); void audit.record('replay_peer_nonce', { ip: req.socket.remoteAddress, actor, score: risk.get(actor).score }); return false; }
   const valid = verifyRequest({ publicKeyPem: peer.publicKeyPem, signatureB64: req.headers['x-signature'], method: req.method, path: new URL(req.url, 'http://localhost').pathname, timestamp: req.headers['x-timestamp'], nonce: req.headers['x-nonce'], body: raw });
-  if (valid) seenNonces.set(nonceKey, Date.now() + 5 * 60 * 1000); return valid;
+  if (valid) seenNonces.set(nonceKey, Date.now() + 5 * 60 * 1000); else { risk.score(actor, 20); void audit.record('invalid_peer_signature', { ip: req.socket.remoteAddress, actor, score: risk.get(actor).score }); } return valid && !risk.isBlocked(actor);
 }
 function notify(deviceId, item) { const set = sockets.get(deviceId); if (!set) return; for (const ws of set) if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'message_available', id: item.id })); }
 async function mediaChunk(req, id, index, raw) {
@@ -49,7 +53,8 @@ const server = http.createServer(async (req, res) => {
   headers(res);
   try {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    if (!rateLimit(`${req.socket.remoteAddress}:${req.method}:${url.pathname}`)) return fail(res, 429);
+    const requestKey = `${req.socket.remoteAddress}:${req.method}:${url.pathname}`;
+    if (!rateLimit(requestKey)) { const action = risk.score(`ip:${req.socket.remoteAddress}`, 6); void audit.record('rate_limit', { ip: req.socket.remoteAddress, actor: requestKey, score: risk.get(`ip:${req.socket.remoteAddress}`).score }); return fail(res, action === 'lock' ? 403 : 429); }
     if (req.method === 'GET' && url.pathname === '/v1/health') return json(res, 200, { ok: true, e2ee: 'opaque-relay' });
 
     if (req.method === 'POST' && url.pathname === '/v1/register') {
@@ -121,6 +126,7 @@ wss.on('connection', ws => {
 });
 
 await store.init();
+await audit.init();
 setInterval(() => store.purgeExpired().catch(() => {}), 60_000).unref();
 const federationPrivateKey = process.env.FEDERATION_PRIVATE_KEY_PEM || (process.env.FEDERATION_PRIVATE_KEY_PATH ? await readFile(process.env.FEDERATION_PRIVATE_KEY_PATH, 'utf8') : null);
 async function federationTick() {
