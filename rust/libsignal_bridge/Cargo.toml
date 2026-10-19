@@ -1,0 +1,13 @@
+[package]
+name = "jubbio-libsignal-bridge"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Version-pinned FFI boundary for Jubbio and libsignal"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+# Add the exact, reviewed libsignal release here after compatibility and license review.
+# Do not replace it with a custom protocol implementation.
