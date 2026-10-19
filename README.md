@@ -1,100 +1,139 @@
 # Jubbio Security
 
-Jubbio için Signal/libsignal tabanlı E2EE istemcileri taşıyacak, REST + WebSocket erişimli, imzalı ve opaque relay/federation sunucusu.
+A self-hosted security and transport layer for Jubbio clients using Signal/libsignal-based end-to-end encryption, signed REST and WebSocket APIs, opaque relay, federation, and encrypted media transfer.
 
-## Güvenlik sınırı
+## Security boundary
 
-Sunucu **mesaj plaintext’ini ve dosya plaintext’ini üretmez**. Sunucuya gelen `envelopeB64` libsignal istemcisinde üretilmiş E2EE zarfı, medya parçaları ise istemcide AEAD ile şifrelenmiş blob olmalıdır. Bu repository sunucuda sahte bir Signal uygulaması yazmaz. Gerçek cihaz oturumları için istemci tarafında sürümü sabitlenmiş `@signalapp/libsignal-client` kullanılmalıdır.
+The server **never creates or reads message or file plaintext**. The `envelopeB64` value received by the server must be an E2EE envelope produced by a libsignal client. Media chunks must already be encrypted on the client with an authenticated encryption scheme. This repository does not implement a homemade Signal protocol. Production clients must use a pinned and reviewed `@signalapp/libsignal-client` release or an approved native libsignal binding.
 
-“Veri çalınamaz” veya “kırılamaz” garantisi yoktur. Ele geçirilmiş cihazın ekranı, belleği veya klavyesi plaintext’i görebilir; metadata da kısmen sunucuya görünür.
+No system can honestly guarantee that data is “unbreakable” or impossible to steal. A fully compromised device can read plaintext from memory, the screen, or the keyboard. Some delivery metadata is also visible to the server.
 
-## Çalışan bileşenler
+## Included components
 
-- `server/`: Node.js 22 REST + WebSocket opaque relay.
-- `client/media.mjs`: İstemci tarafında AES-256-GCM ile authenticated, sıralı medya parçası şifreleme örneği.
-- `client/key-vault.mjs`: scrypt + AES-256-GCM ile yerel parola kasası; anahtar buffer’ları işlem sonunda temizlenir.
-- `server/src/security-controls.mjs`: zamanla azalan risk puanı ve hash-zincirli, içeriksiz olay günlüğü.
-- `security/decoy.mjs`: gerçek relay ağına bağlı olmayan izole decoy/honeypot servisi.
-- `scripts/e2e-test.mjs`: İki cihazla imzalı relay, bozuk imza reddi, inbox ve medya round-trip testi.
-- `scripts/federation-test.mjs`: İki sunucu ve üç kullanıcıyla pinned peer signing ve opaque cross-server delivery testi.
-- `docker-compose.yml`: Tek komutla izole Docker kurulumu.
-- `docs/E2EE-ARCHITECTURE.md`: Tehdit modeli, Signal/libsignal mimarisi, federasyon ve yol haritası.
+- `server/`: Node.js 22 REST and WebSocket opaque relay.
+- `client/media.mjs`: Client-side AES-256-GCM authenticated and ordered media chunk encryption example.
+- `client/key-vault.mjs`: Local password vault using scrypt and AES-256-GCM; secret buffers are cleared on a best-effort basis after use.
+- `server/src/security-controls.mjs`: Time-decaying risk scoring and content-free hash-chained security audit events.
+- `security/decoy.mjs`: Isolated decoy/honeypot service that is not connected to the real relay network.
+- `scripts/e2e-test.mjs`: Signed relay, invalid-signature rejection, inbox, and encrypted media round-trip test.
+- `scripts/federation-test.mjs`: Two-server, three-user pinned-peer federation test with opaque cross-server delivery.
+- `scripts/security-controls-test.mjs`: Risk escalation, audit-chain, password-vault, and wrong-password rejection test.
+- `docker-compose.yml`: One-command container deployment.
+- `docs/E2EE-ARCHITECTURE.md`: Threat model, Signal/libsignal architecture, federation design, and hardening roadmap.
 
-## Tek komutla kurulum
+## One-command deployment
 
 ```bash
 cp .env.example .env
-# .env içindeki INVITE_CODE değerini uzun rastgele bir değerle değiştir
+# Replace INVITE_CODE with a long random value.
 
 docker compose up -d --build
 curl http://localhost:8080/v1/health
 ```
 
-TLS üretimde reverse proxy veya doğrudan TLS terminasyonu ile **zorunlu** yapılmalıdır. Geliştirme HTTP’si public internete açılmamalıdır. `jubbio_data` volume’ünü düzenli ve şifreli olarak yedekleyin; backup anahtarını sunucuda plaintext tutmayın.
+Production deployments must enforce TLS 1.3 through a reverse proxy or direct TLS termination. Do not expose the development HTTP listener directly to the public internet. Back up the `jubbio_data` volume using encryption; never store the backup key in plaintext on the server.
 
-## Yerel çalıştırma ve test
+To start the isolated decoy profile:
 
 ```bash
-cd server
-npm install
-cd ..
+docker compose --profile decoy up -d --build
+```
+
+The decoy service is placed on a separate Docker network and must not be connected to the real relay network. High-risk traffic should be routed by a separately managed reverse proxy/WAF policy on an isolated host or network segment.
+
+## Local development and tests
+
+```bash
+npm --prefix server install
 node scripts/e2e-test.mjs
 node scripts/federation-test.mjs
 node scripts/security-controls-test.mjs
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j2
+ctest --test-dir build --output-on-failure
+
+cargo check --manifest-path rust/libsignal_bridge/Cargo.toml
+npm --prefix server audit --omit=dev --audit-level=high
 ```
 
-Test şunları kanıtlar: cihaz public key kaydı, Ed25519 imzalı relay, imza bozulmasının reddi, inbox teslimi, AES-256-GCM medya chunk round-trip’i ve diskte yalnızca testin şifreli medya blob’unun tutulması. Testteki `opaque-libsignal-ciphertext-v1` gerçek Signal ciphertext değildir; gerçek istemci bunun yerine libsignal çıktısı vermelidir.
+The tests cover device public-key registration, Ed25519-signed relay requests, invalid-signature rejection, inbox delivery, AES-256-GCM media chunk round trips, two-server federation, pinned peer signing, risk escalation, hash-chain audit events, and password-vault failure handling. The test envelope named `opaque-libsignal-ciphertext-v1` is only a transport fixture; it is not a real Signal ciphertext. A production client must replace it with output from libsignal.
 
 ## API
 
-### Kayıt
+### Device registration
 
-`POST /v1/register` gövdesi: `{ "deviceId": "user@server/device", "publicKeyPem": "...", "inviteCode": "..." }`.
+`POST /v1/register` with:
 
-### İmzalı relay
+```json
+{
+  "deviceId": "user@server/device",
+  "publicKeyPem": "...",
+  "inviteCode": "..."
+}
+```
 
-`POST /v1/relay` gövdesi: `{ "recipient": "user@server/device", "envelopeB64": "<libsignal ciphertext>" }`.
+### Signed relay
 
-Her istek şu başlıklarla Ed25519 imzalanır: `x-device-id`, `x-timestamp`, `x-nonce`, `x-signature`. İmzalanan canonical metin:
+`POST /v1/relay` with:
+
+```json
+{
+  "recipient": "user@server/device",
+  "envelopeB64": "<libsignal ciphertext>"
+}
+```
+
+Every request is signed with Ed25519 headers: `x-device-id`, `x-timestamp`, `x-nonce`, and `x-signature`. The canonical signed message is:
 
 ```text
 METHOD\nPATH\nTIMESTAMP\nNONCE\nSHA256(REQUEST_BODY)
 ```
 
-Zaman damgası 5 dakika penceresindedir. Sunucu nonce’ları TTL’li replay cache içinde tek kullanımlık olarak kabul eder; çoklu instance üretiminde bu cache Redis/SQL gibi ortak atomik store’a taşınmalıdır.
+Timestamps are accepted within a five-minute window. Nonces are single-use in a TTL cache. In a multi-instance production deployment, the cache must move to a shared atomic Redis or SQL store.
 
 ### Inbox
 
-`GET /v1/inbox/:deviceId` aynı imzalı başlıklarla yalnızca o cihazın bekleyen opaque envelope’larını döndürür.
+`GET /v1/inbox/:deviceId` returns pending opaque envelopes for that device and requires the same signed headers.
 
-### Medya
+### Encrypted media
 
-1. `POST /v1/media/:clientFileId` ile chunk sayısını ve boyutu bildir.
-2. `PUT /v1/media/:mediaId/chunks/:index` ile zaten AEAD şifreli chunk’ı gönder; `x-chunk-sha256` ve `x-chunk-count` zorunludur.
-3. `GET /v1/media/:mediaId/chunks/:index` ile blob’u al.
-4. Dosya anahtarı ve manifesti ayrı libsignal mesajında gönder; sunucu dosya anahtarını hiç görmez.
+1. Call `POST /v1/media/:clientFileId` with the chunk count and total size.
+2. Upload an already encrypted chunk with `PUT /v1/media/:mediaId/chunks/:index`; `x-chunk-sha256` and `x-chunk-count` are required.
+3. Download the opaque blob with `GET /v1/media/:mediaId/chunks/:index`.
+4. Send the file key and manifest only inside a libsignal E2EE message. The server must never receive the file key.
 
 ### WebSocket
 
-`GET /v1/ws` bağlantısından sonra ilk mesaj `{ "type": "auth", "deviceId": "...", "timestamp": "...", "nonce": "...", "signature": "..." }` olmalıdır. WebSocket imzası `WS\n/v1/ws\nTIMESTAMP\nNONCE\nSHA256(empty)` canonical metnini kapsar. Bağlantı yeni mesaj için yalnızca `message_available` bildirimi yollar; mesaj içeriği WebSocket’te plaintext olarak yayınlanmaz.
+After connecting to `GET /v1/ws`, the first message must be:
 
-## Üretim öncesi zorunlu işler
+```json
+{
+  "type": "auth",
+  "deviceId": "...",
+  "timestamp": "...",
+  "nonce": "...",
+  "signature": "..."
+}
+```
 
-- libsignal istemci oturumlarını Android/iOS/desktop’ta gerçek prekey bundle ve Double Ratchet ile bağla.
-- Nonce replay kayıtlarını atomik ve TTL’li bir KV/SQL store’a taşı.
-- Federation için `FEDERATION_PEERS_JSON` içinde her peer’ın public key fingerprint’ini/pem’ini sabitle; private server signing key’i env yerine secret file/HSM’de tut.
-- Federation peer public key pinning, karşılıklı TLS ve offline retry queue’yu production store/worker ile tamamla.
-- REST/WebSocket’i TLS 1.3 arkasında yayınla; certificate rotation planı oluştur.
-- Public key değişiminde QR/security-code doğrulaması ve cihaz onayı uygula.
-- Postgres/SQLite gibi güvenilir kalıcı store seç; bu başlangıç sürümünün JSON store’u yüksek hacim için uygun değildir.
-- Media download authorization’ı alıcının libsignal erişim biletiyle sınırla; örnek endpoint owner-only’dir.
-- Fuzz, iki sunucu/üç kullanıcı federasyon testi, disk plaintext taraması, bağımsız protokol denetimi ve bug bounty tamamlanmadan üretime alma.
-- Yüksek risk trafiğini decoy’a yönlendirme reverse proxy/WAF seviyesinde yapılmalı; decoy varsayılan compose profiline dahil değildir. Başlatmak için `docker compose --profile decoy up -d --build` kullanılır ve decoy ağı relay ağından ayrıdır.
-- Hash-zincirli audit kaydı içerik taşımaz; IP/olay metadata’sı için saklama süresi, KVKK/GDPR ve erişim yetkisi ayrıca uygulanmalıdır.
-- Node buffer temizliği best-effort’tur; JavaScript GC üzerinde kesin RAM silme garantisi yoktur. Identity/prekey private key’leri gerçek libsignal ve OS secure storage içinde tutulmalıdır.
+The WebSocket signature covers `WS\n/v1/ws\nTIMESTAMP\nNONCE\nSHA256(empty)`. The channel emits only `message_available` notifications; message contents are never published as WebSocket plaintext.
 
-## Kaynaklar
+## Required before production
 
-- [Signal Double Ratchet](https://signal.org/docs/specifications/doubleratchet/)
-- [Signal PQXDH](https://signal.org/docs/specifications/pqxdh/)
-- [Official libsignal](https://github.com/signalapp/libsignal)
+- Connect real libsignal sessions on Android, iOS, and desktop with prekey bundles and Double Ratchet.
+- Move nonce replay state to an atomic, TTL-backed shared store.
+- Pin every federation peer public key and keep the federation private key in a secret file or HSM instead of a normal environment variable.
+- Use mutual TLS and a production-grade federation worker.
+- Terminate REST and WebSocket traffic behind TLS 1.3 with a certificate rotation plan.
+- Add QR/security-code verification, device approval, and identity-change warnings.
+- Replace the starter JSON store with PostgreSQL or SQLite suitable for the deployment scale.
+- Authorize media downloads using recipient-side E2EE access tickets; the current example is owner-only.
+- Complete fuzzing, two-server/three-user federation tests, plaintext-at-rest scans, an independent security review, and a bug bounty before production use.
+- Define retention, access control, and privacy-law handling for IP and security-event metadata.
+
+## References
+
+- [Signal Double Ratchet specification](https://signal.org/docs/specifications/doubleratchet/)
+- [Signal PQXDH specification](https://signal.org/docs/specifications/pqxdh/)
+- [Official libsignal repository](https://github.com/signalapp/libsignal)
