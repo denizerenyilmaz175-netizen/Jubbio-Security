@@ -13,6 +13,7 @@ Sunucu **mesaj plaintext’ini ve dosya plaintext’ini üretmez**. Sunucuya gel
 - `server/`: Node.js 22 REST + WebSocket opaque relay.
 - `client/media.mjs`: İstemci tarafında AES-256-GCM ile authenticated, sıralı medya parçası şifreleme örneği.
 - `scripts/e2e-test.mjs`: İki cihazla imzalı relay, bozuk imza reddi, inbox ve medya round-trip testi.
+- `scripts/federation-test.mjs`: İki sunucu ve üç kullanıcıyla pinned peer signing ve opaque cross-server delivery testi.
 - `docker-compose.yml`: Tek komutla izole Docker kurulumu.
 - `docs/E2EE-ARCHITECTURE.md`: Tehdit modeli, Signal/libsignal mimarisi, federasyon ve yol haritası.
 
@@ -35,6 +36,7 @@ cd server
 npm install
 cd ..
 node scripts/e2e-test.mjs
+node scripts/federation-test.mjs
 ```
 
 Test şunları kanıtlar: cihaz public key kaydı, Ed25519 imzalı relay, imza bozulmasının reddi, inbox teslimi, AES-256-GCM medya chunk round-trip’i ve diskte yalnızca testin şifreli medya blob’unun tutulması. Testteki `opaque-libsignal-ciphertext-v1` gerçek Signal ciphertext değildir; gerçek istemci bunun yerine libsignal çıktısı vermelidir.
@@ -55,7 +57,7 @@ Her istek şu başlıklarla Ed25519 imzalanır: `x-device-id`, `x-timestamp`, `x
 METHOD\nPATH\nTIMESTAMP\nNONCE\nSHA256(REQUEST_BODY)
 ```
 
-Zaman damgası 5 dakika penceresindedir. Nonce replay cache üretim veritabanında ayrıca tutulmalıdır; bu örnek minimum transport doğrulamasını ve imza bütünlüğünü gösterir.
+Zaman damgası 5 dakika penceresindedir. Sunucu nonce’ları TTL’li replay cache içinde tek kullanımlık olarak kabul eder; çoklu instance üretiminde bu cache Redis/SQL gibi ortak atomik store’a taşınmalıdır.
 
 ### Inbox
 
@@ -70,12 +72,13 @@ Zaman damgası 5 dakika penceresindedir. Nonce replay cache üretim veritabanın
 
 ### WebSocket
 
-`GET /v1/ws` bağlantısından sonra ilk mesaj `{ "type": "auth", "deviceId": "..." }` olmalıdır. Bağlantı yalnızca kayıtlı cihazı doğrular ve yeni mesaj için `message_available` bildirimi yollar. Mesaj içeriği WebSocket’te plaintext olarak yayınlanmaz.
+`GET /v1/ws` bağlantısından sonra ilk mesaj `{ "type": "auth", "deviceId": "...", "timestamp": "...", "nonce": "...", "signature": "..." }` olmalıdır. WebSocket imzası `WS\n/v1/ws\nTIMESTAMP\nNONCE\nSHA256(empty)` canonical metnini kapsar. Bağlantı yeni mesaj için yalnızca `message_available` bildirimi yollar; mesaj içeriği WebSocket’te plaintext olarak yayınlanmaz.
 
 ## Üretim öncesi zorunlu işler
 
 - libsignal istemci oturumlarını Android/iOS/desktop’ta gerçek prekey bundle ve Double Ratchet ile bağla.
 - Nonce replay kayıtlarını atomik ve TTL’li bir KV/SQL store’a taşı.
+- Federation için `FEDERATION_PEERS_JSON` içinde her peer’ın public key fingerprint’ini/pem’ini sabitle; private server signing key’i env yerine secret file/HSM’de tut.
 - Federation peer public key pinning, karşılıklı TLS ve offline retry queue’yu production store/worker ile tamamla.
 - REST/WebSocket’i TLS 1.3 arkasında yayınla; certificate rotation planı oluştur.
 - Public key değişiminde QR/security-code doğrulaması ve cihaz onayı uygula.

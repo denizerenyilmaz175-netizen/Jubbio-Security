@@ -116,7 +116,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 wss.on('connection', ws => {
   let deviceId = null;
-  ws.once('message', raw => { try { const p = JSON.parse(raw); if (p.type !== 'auth' || !store.device(p.deviceId)) return ws.close(1008); deviceId = p.deviceId; if (!sockets.has(deviceId)) sockets.set(deviceId, new Set()); sockets.get(deviceId).add(ws); ws.send(JSON.stringify({ type: 'ready' })); } catch { ws.close(1008); } });
+  ws.once('message', raw => { try { const p = JSON.parse(raw); const d = store.device(p.deviceId); const nonceKey = `ws:${p.deviceId}:${p.nonce}`; const valid = p.type === 'auth' && d && validateNonce(p.nonce) && !seenNonces.has(nonceKey) && verifyRequest({ publicKeyPem: d.publicKeyPem, signatureB64: p.signature, method: 'WS', path: '/v1/ws', timestamp: p.timestamp, nonce: p.nonce, body: Buffer.alloc(0) }); if (!valid) return ws.close(1008); seenNonces.set(nonceKey, Date.now() + 5 * 60 * 1000); deviceId = p.deviceId; if (!sockets.has(deviceId)) sockets.set(deviceId, new Set()); sockets.get(deviceId).add(ws); ws.send(JSON.stringify({ type: 'ready' })); } catch { ws.close(1008); } });
   ws.on('close', () => { if (deviceId && sockets.has(deviceId)) sockets.get(deviceId).delete(ws); });
 });
 
